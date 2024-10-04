@@ -12,8 +12,11 @@ use std::time::Duration;
 use futures_util::future::Either;
 use http::uri::{Scheme, Uri};
 use pin_project_lite::pin_project;
+#[cfg(not(target_env = "sgx"))]
 use socket2::TcpKeepalive;
-use tokio::net::{TcpSocket, TcpStream};
+#[cfg(not(target_env = "sgx"))]
+use tokio::net::TcpSocket;
+use tokio::net::TcpStream;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
 
@@ -69,6 +72,7 @@ struct Config {
     connect_timeout: Option<Duration>,
     enforce_http: bool,
     happy_eyeballs_timeout: Option<Duration>,
+    #[cfg(not(target_env = "sgx"))]
     tcp_keepalive_config: TcpKeepaliveConfig,
     local_address_ipv4: Option<Ipv4Addr>,
     local_address_ipv6: Option<Ipv6Addr>,
@@ -80,13 +84,14 @@ struct Config {
     interface: Option<String>,
 }
 
+#[cfg(not(target_env = "sgx"))]
 #[derive(Default, Debug, Clone, Copy)]
 struct TcpKeepaliveConfig {
     time: Option<Duration>,
     interval: Option<Duration>,
     retries: Option<u32>,
 }
-
+#[cfg(not(target_env = "sgx"))]
 impl TcpKeepaliveConfig {
     /// Converts into a `socket2::TcpKeealive` if there is any keep alive configuration.
     fn into_tcpkeepalive(self) -> Option<TcpKeepalive> {
@@ -173,6 +178,7 @@ impl<R> HttpConnector<R> {
                 connect_timeout: None,
                 enforce_http: true,
                 happy_eyeballs_timeout: Some(Duration::from_millis(300)),
+                #[cfg(not(target_env = "sgx"))]
                 tcp_keepalive_config: TcpKeepaliveConfig::default(),
                 local_address_ipv4: None,
                 local_address_ipv6: None,
@@ -203,20 +209,29 @@ impl<R> HttpConnector<R> {
     /// Default is `None`.
     #[inline]
     pub fn set_keepalive(&mut self, time: Option<Duration>) {
-        self.config_mut().tcp_keepalive_config.time = time;
+        #[cfg(not(target_env = "sgx"))]
+        {
+            self.config_mut().tcp_keepalive_config.time = time;
+        }
     }
 
     /// Set the duration between two successive TCP keepalive retransmissions,
     /// if acknowledgement to the previous keepalive transmission is not received.
     #[inline]
     pub fn set_keepalive_interval(&mut self, interval: Option<Duration>) {
-        self.config_mut().tcp_keepalive_config.interval = interval;
+        #[cfg(not(target_env = "sgx"))]
+        {
+            self.config_mut().tcp_keepalive_config.interval = interval;
+        }
     }
 
     /// Set the number of retransmissions to be carried out before declaring that remote end is not available.
     #[inline]
     pub fn set_keepalive_retries(&mut self, retries: Option<u32>) {
-        self.config_mut().tcp_keepalive_config.retries = retries;
+        #[cfg(not(target_env = "sgx"))]
+        {
+            self.config_mut().tcp_keepalive_config.retries = retries;
+        }
     }
 
     /// Set that all sockets have `SO_NODELAY` set to the supplied value `nodelay`.
@@ -506,7 +521,7 @@ pin_project! {
 }
 
 type ConnectResult = Result<TokioIo<TcpStream>, ConnectError>;
-type BoxConnecting = Pin<Box<dyn Future<Output = ConnectResult> + Send>>;
+type BoxConnecting = Pin<Box<dyn Future<Output=ConnectResult> + Send>>;
 
 impl<R: Resolve> Future for HttpConnecting<R> {
     type Output = ConnectResult;
@@ -666,6 +681,7 @@ impl ConnectingTcpRemote {
     }
 }
 
+#[cfg(not(target_env = "sgx"))]
 fn bind_local_address(
     socket: &socket2::Socket,
     dst_addr: &SocketAddr,
@@ -698,22 +714,27 @@ fn connect(
     addr: &SocketAddr,
     config: &Config,
     connect_timeout: Option<Duration>,
-) -> Result<impl Future<Output = Result<TcpStream, ConnectError>>, ConnectError> {
-    // TODO(eliza): if Tokio's `TcpSocket` gains support for setting the
-    // keepalive timeout, it would be nice to use that instead of socket2,
-    // and avoid the unsafe `into_raw_fd`/`from_raw_fd` dance...
-    use socket2::{Domain, Protocol, Socket, Type};
+) -> Result<impl Future<Output=Result<TcpStream, ConnectError>>, ConnectError> {
+    #[cfg(not(target_env = "sgx"))]
+    let socket = {
+        // TODO(eliza): if Tokio's `TcpSocket` gains support for setting the
+        // keepalive timeout, it would be nice to use that instead of socket2,
+        // and avoid the unsafe `into_raw_fd`/`from_raw_fd` dance...
+        use socket2::{Domain, Protocol, Socket, Type};
 
-    let domain = Domain::for_address(*addr);
-    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
-        .map_err(ConnectError::m("tcp open error"))?;
+        let domain = Domain::for_address(*addr);
+        let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
+            .map_err(ConnectError::m("tcp open error"))?;
 
-    // When constructing a Tokio `TcpSocket` from a raw fd/socket, the user is
-    // responsible for ensuring O_NONBLOCK is set.
-    socket
-        .set_nonblocking(true)
-        .map_err(ConnectError::m("tcp set_nonblocking error"))?;
+        // When constructing a Tokio `TcpSocket` from a raw fd/socket, the user is
+        // responsible for ensuring O_NONBLOCK is set.
+        socket
+            .set_nonblocking(true)
+            .map_err(ConnectError::m("tcp set_nonblocking error"))?;
+        socket
+    };
 
+    #[cfg(not(target_env = "sgx"))]
     if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
         if let Err(e) = socket.set_tcp_keepalive(tcp_keepalive) {
             warn!("tcp set_keepalive error: {}", e);
@@ -728,13 +749,14 @@ fn connect(
             .map_err(ConnectError::m("tcp bind interface error"))?;
     }
 
+    #[cfg(not(target_env = "sgx"))]
     bind_local_address(
         &socket,
         addr,
         &config.local_address_ipv4,
         &config.local_address_ipv6,
     )
-    .map_err(ConnectError::m("tcp bind local error"))?;
+        .map_err(ConnectError::m("tcp bind local error"))?;
 
     #[cfg(unix)]
     let socket = unsafe {
@@ -754,26 +776,28 @@ fn connect(
         use std::os::windows::io::{FromRawSocket, IntoRawSocket};
         TcpSocket::from_raw_socket(socket.into_raw_socket())
     };
+    #[cfg(not(target_env = "sgx"))]
+    {
+        if config.reuse_address {
+            if let Err(e) = socket.set_reuseaddr(true) {
+                warn!("tcp set_reuse_address error: {}", e);
+            }
+        }
 
-    if config.reuse_address {
-        if let Err(e) = socket.set_reuseaddr(true) {
-            warn!("tcp set_reuse_address error: {}", e);
+        if let Some(size) = config.send_buffer_size {
+            if let Err(e) = socket.set_send_buffer_size(size.try_into().unwrap_or(u32::MAX)) {
+                warn!("tcp set_buffer_size error: {}", e);
+            }
+        }
+
+        if let Some(size) = config.recv_buffer_size {
+            if let Err(e) = socket.set_recv_buffer_size(size.try_into().unwrap_or(u32::MAX)) {
+                warn!("tcp set_recv_buffer_size error: {}", e);
+            }
         }
     }
 
-    if let Some(size) = config.send_buffer_size {
-        if let Err(e) = socket.set_send_buffer_size(size.try_into().unwrap_or(u32::MAX)) {
-            warn!("tcp set_buffer_size error: {}", e);
-        }
-    }
-
-    if let Some(size) = config.recv_buffer_size {
-        if let Err(e) = socket.set_recv_buffer_size(size.try_into().unwrap_or(u32::MAX)) {
-            warn!("tcp set_recv_buffer_size error: {}", e);
-        }
-    }
-
-    let connect = socket.connect(*addr);
+    let connect = TcpStream::connect(*addr);
     Ok(async move {
         match connect_timeout {
             Some(dur) => match tokio::time::timeout(dur, connect).await {
@@ -783,7 +807,7 @@ fn connect(
             },
             None => connect.await,
         }
-        .map_err(ConnectError::m("tcp connect error"))
+            .map_err(ConnectError::m("tcp connect error"))
     })
 }
 
@@ -842,6 +866,7 @@ mod tests {
 
     use ::http::Uri;
 
+    #[cfg(not(target_env = "sgx"))]
     use crate::client::legacy::connect::http::TcpKeepaliveConfig;
 
     use super::super::sealed::{Connect, ConnectSvc};
@@ -993,14 +1018,14 @@ mod tests {
             interface.clone(),
             interface.clone(),
         )
-        .await;
+            .await;
         assert_interface_name(
             format!("http://[::1]:{}", port),
             server6,
             interface.clone(),
             interface.clone(),
         )
-        .await;
+            .await;
     }
 
     #[test]
@@ -1125,6 +1150,7 @@ mod tests {
                         local_address_ipv4: None,
                         local_address_ipv6: None,
                         connect_timeout: None,
+                        #[cfg(not(target_env = "sgx"))]
                         tcp_keepalive_config: TcpKeepaliveConfig::default(),
                         happy_eyeballs_timeout: Some(fallback_timeout),
                         nodelay: false,
@@ -1203,11 +1229,13 @@ mod tests {
 
     use std::time::Duration;
 
+    #[cfg(not(target_env = "sgx"))]
     #[test]
     fn no_tcp_keepalive_config() {
         assert!(TcpKeepaliveConfig::default().into_tcpkeepalive().is_none());
     }
 
+    #[cfg(not(target_env = "sgx"))]
     #[test]
     fn tcp_keepalive_time_config() {
         let mut kac = TcpKeepaliveConfig::default();
@@ -1219,7 +1247,13 @@ mod tests {
         }
     }
 
-    #[cfg(not(any(target_os = "openbsd", target_os = "redox", target_os = "solaris")))]
+
+    #[cfg(not(any(
+        target_os = "openbsd",
+        target_os = "redox",
+        target_os = "solaris",
+        target_env = "sgx"
+    )))]
     #[test]
     fn tcp_keepalive_interval_config() {
         let mut kac = TcpKeepaliveConfig::default();
@@ -1235,7 +1269,8 @@ mod tests {
         target_os = "openbsd",
         target_os = "redox",
         target_os = "solaris",
-        target_os = "windows"
+        target_os = "windows",
+        target_env = "sgx"
     )))]
     #[test]
     fn tcp_keepalive_retries_config() {

@@ -4,6 +4,10 @@ use std::pin::pin;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
+#[cfg(target_env = "sgx")]
+fn main() { println!("this example is not available in sgx") }
+
+#[cfg(not(target_env = "sgx"))]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
