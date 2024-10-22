@@ -370,6 +370,7 @@ where
     type Future = HttpConnecting<R>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        #[cfg(not(target_env = "sgx"))] // no DNS resolve on app side in SGX
         futures_util::ready!(self.resolver.poll_ready(cx)).map_err(ConnectError::dns)?;
         Poll::Ready(Ok(()))
     }
@@ -435,30 +436,64 @@ where
     async fn call_async(&mut self, dst: Uri) -> Result<TokioIo<TcpStream>, ConnectError> {
         let config = &self.config;
 
-        let (host, port) = get_host_port(config, &dst)?;
-        let host = host.trim_start_matches('[').trim_end_matches(']');
+        let sock;
 
-        // If the host is already an IP addr (v4 or v6),
-        // skip resolving the dns and start connecting right away.
-        let addrs = if let Some(addrs) = dns::SocketAddrs::try_parse(host, port) {
-            addrs
-        } else {
-            let addrs = resolve(&mut self.resolver, dns::Name::new(host.into()))
-                .await
-                .map_err(ConnectError::dns)?;
-            let addrs = addrs
-                .map(|mut addr| {
-                    set_port(&mut addr, port, dst.port().is_some());
+        // in SGX, DNS is handled by enclave runner on user space instead on app side
 
-                    addr
-                })
-                .collect();
-            dns::SocketAddrs::new(addrs)
-        };
+        #[cfg(not(target_env = "sgx"))]
+        {
+            let (host, port) = get_host_port(config, &dst)?;
+            let host = host.trim_start_matches('[').trim_end_matches(']');
 
-        let c = ConnectingTcp::new(addrs, config);
+            // If the host is already an IP addr (v4 or v6),
+            // skip resolving the dns and start connecting right away.
+            let addrs = if let Some(addrs) = dns::SocketAddrs::try_parse(host, port) {
+                addrs
+            } else {
+                let addrs = resolve(&mut self.resolver, dns::Name::new(host.into()))
+                    .await
+                    .map_err(ConnectError::dns)?;
+                let addrs = addrs
+                    .map(|mut addr| {
+                        set_port(&mut addr, port, dst.port().is_some());
 
-        let sock = c.connect().await?;
+                        addr
+                    })
+                    .collect();
+                dns::SocketAddrs::new(addrs)
+            };
+
+            let c = ConnectingTcp::new(addrs, config);
+
+            sock = c.connect().await?;
+        }
+
+        #[cfg(target_env = "sgx")]
+        {
+            let uri = dst;
+            let host = get_host(&uri)?;
+            let port = uri.port_u16().unwrap_or_else(|| {
+                if uri.scheme_str() == Some("http") {
+                    80
+                } else {
+                    443
+                }
+            });
+            let connect = TcpStream::connect((host, port));
+            let stream = match config.connect_timeout {
+                Some(duration) => match tokio::time::timeout(duration, connect).await {
+                    Ok(Ok(stream)) => Ok(stream),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "connection timed out",
+                    )),
+                },
+                None => connect.await,
+            }
+            .map_err(|e| ConnectError::new("I/O error", e))?;
+            sock = stream;
+        }
 
         if let Err(e) = sock.set_nodelay(config.nodelay) {
             warn!("tcp set_nodelay error: {}", e);
@@ -466,6 +501,23 @@ where
 
         Ok(TokioIo::new(sock))
     }
+}
+
+#[cfg(target_env = "sgx")]
+pub(super) fn get_host(uri: &Uri) -> Result<&str, ConnectError> {
+    use std::str::FromStr;
+    let host = uri.host().ok_or(ConnectError::new(
+        "invalid URI: missing host",
+        format!("no host in: {uri}"),
+    ))?;
+
+    if host.starts_with("[") && host.ends_with("]") {
+        let maybe_ipv6 = host.strip_prefix('[').unwrap().strip_suffix(']').unwrap();
+        if let Ok(_) = Ipv6Addr::from_str(maybe_ipv6) {
+            return Ok(maybe_ipv6);
+        }
+    }
+    Ok(host)
 }
 
 impl Connection for TcpStream {
@@ -521,7 +573,7 @@ pin_project! {
 }
 
 type ConnectResult = Result<TokioIo<TcpStream>, ConnectError>;
-type BoxConnecting = Pin<Box<dyn Future<Output=ConnectResult> + Send>>;
+type BoxConnecting = Pin<Box<dyn Future<Output = ConnectResult> + Send>>;
 
 impl<R: Resolve> Future for HttpConnecting<R> {
     type Output = ConnectResult;
@@ -714,7 +766,7 @@ fn connect(
     addr: &SocketAddr,
     config: &Config,
     connect_timeout: Option<Duration>,
-) -> Result<impl Future<Output=Result<TcpStream, ConnectError>>, ConnectError> {
+) -> Result<impl Future<Output = Result<TcpStream, ConnectError>>, ConnectError> {
     #[cfg(not(target_env = "sgx"))]
     let socket = {
         // TODO(eliza): if Tokio's `TcpSocket` gains support for setting the
@@ -756,7 +808,7 @@ fn connect(
         &config.local_address_ipv4,
         &config.local_address_ipv6,
     )
-        .map_err(ConnectError::m("tcp bind local error"))?;
+    .map_err(ConnectError::m("tcp bind local error"))?;
 
     #[cfg(unix)]
     let socket = unsafe {
@@ -807,7 +859,7 @@ fn connect(
             },
             None => connect.await,
         }
-            .map_err(ConnectError::m("tcp connect error"))
+        .map_err(ConnectError::m("tcp connect error"))
     })
 }
 
@@ -1018,14 +1070,14 @@ mod tests {
             interface.clone(),
             interface.clone(),
         )
-            .await;
+        .await;
         assert_interface_name(
             format!("http://[::1]:{}", port),
             server6,
             interface.clone(),
             interface.clone(),
         )
-            .await;
+        .await;
     }
 
     #[test]
@@ -1246,7 +1298,6 @@ mod tests {
             panic!("test failed");
         }
     }
-
 
     #[cfg(not(any(
         target_os = "openbsd",
