@@ -12,9 +12,9 @@ use std::time::Duration;
 use futures_util::future::Either;
 use http::uri::{Scheme, Uri};
 use pin_project_lite::pin_project;
-#[cfg(not(target_env = "sgx"))]
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use socket2::TcpKeepalive;
-#[cfg(not(target_env = "sgx"))]
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use tokio::net::TcpSocket;
 use tokio::net::TcpStream;
 use tokio::time::Sleep;
@@ -72,7 +72,7 @@ struct Config {
     connect_timeout: Option<Duration>,
     enforce_http: bool,
     happy_eyeballs_timeout: Option<Duration>,
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     tcp_keepalive_config: TcpKeepaliveConfig,
     local_address_ipv4: Option<Ipv4Addr>,
     local_address_ipv6: Option<Ipv6Addr>,
@@ -84,14 +84,14 @@ struct Config {
     interface: Option<String>,
 }
 
-#[cfg(not(target_env = "sgx"))]
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 #[derive(Default, Debug, Clone, Copy)]
 struct TcpKeepaliveConfig {
     time: Option<Duration>,
     interval: Option<Duration>,
     retries: Option<u32>,
 }
-#[cfg(not(target_env = "sgx"))]
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 impl TcpKeepaliveConfig {
     /// Converts into a `socket2::TcpKeealive` if there is any keep alive configuration.
     fn into_tcpkeepalive(self) -> Option<TcpKeepalive> {
@@ -178,7 +178,7 @@ impl<R> HttpConnector<R> {
                 connect_timeout: None,
                 enforce_http: true,
                 happy_eyeballs_timeout: Some(Duration::from_millis(300)),
-                #[cfg(not(target_env = "sgx"))]
+                #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
                 tcp_keepalive_config: TcpKeepaliveConfig::default(),
                 local_address_ipv4: None,
                 local_address_ipv6: None,
@@ -209,7 +209,7 @@ impl<R> HttpConnector<R> {
     /// Default is `None`.
     #[inline]
     pub fn set_keepalive(&mut self, time: Option<Duration>) {
-        #[cfg(not(target_env = "sgx"))]
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
         {
             self.config_mut().tcp_keepalive_config.time = time;
         }
@@ -219,7 +219,7 @@ impl<R> HttpConnector<R> {
     /// if acknowledgement to the previous keepalive transmission is not received.
     #[inline]
     pub fn set_keepalive_interval(&mut self, interval: Option<Duration>) {
-        #[cfg(not(target_env = "sgx"))]
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
         {
             self.config_mut().tcp_keepalive_config.interval = interval;
         }
@@ -228,7 +228,7 @@ impl<R> HttpConnector<R> {
     /// Set the number of retransmissions to be carried out before declaring that remote end is not available.
     #[inline]
     pub fn set_keepalive_retries(&mut self, retries: Option<u32>) {
-        #[cfg(not(target_env = "sgx"))]
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
         {
             self.config_mut().tcp_keepalive_config.retries = retries;
         }
@@ -370,7 +370,8 @@ where
     type Future = HttpConnecting<R>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        #[cfg(not(target_env = "sgx"))] // no DNS resolve on app side in SGX
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+        // no DNS resolve on app side in SGX
         futures_util::ready!(self.resolver.poll_ready(cx)).map_err(ConnectError::dns)?;
         Poll::Ready(Ok(()))
     }
@@ -440,7 +441,7 @@ where
 
         // in SGX, DNS is handled by enclave runner on user space instead on app side
 
-        #[cfg(not(target_env = "sgx"))]
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
         {
             let (host, port) = get_host_port(config, &dst)?;
             let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -468,7 +469,7 @@ where
             sock = c.connect().await?;
         }
 
-        #[cfg(target_env = "sgx")]
+        #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
         {
             let uri = dst;
             let host = get_host(&uri)?;
@@ -503,7 +504,7 @@ where
     }
 }
 
-#[cfg(target_env = "sgx")]
+#[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
 pub(super) fn get_host(uri: &Uri) -> Result<&str, ConnectError> {
     use std::str::FromStr;
     let host = uri.host().ok_or(ConnectError::new(
@@ -733,7 +734,7 @@ impl ConnectingTcpRemote {
     }
 }
 
-#[cfg(not(target_env = "sgx"))]
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 fn bind_local_address(
     socket: &socket2::Socket,
     dst_addr: &SocketAddr,
@@ -767,7 +768,7 @@ fn connect(
     config: &Config,
     connect_timeout: Option<Duration>,
 ) -> Result<impl Future<Output = Result<TcpStream, ConnectError>>, ConnectError> {
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     let socket = {
         // TODO(eliza): if Tokio's `TcpSocket` gains support for setting the
         // keepalive timeout, it would be nice to use that instead of socket2,
@@ -786,14 +787,17 @@ fn connect(
         socket
     };
 
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
         if let Err(e) = socket.set_tcp_keepalive(tcp_keepalive) {
             warn!("tcp set_keepalive error: {}", e);
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg(all(
+        not(any(target_env = "sgx", target_env = "fortanixvme")),
+        any(target_os = "android", target_os = "fuchsia", target_os = "linux")
+    ))]
     // That this only works for some socket types, particularly AF_INET sockets.
     if let Some(interface) = &config.interface {
         socket
@@ -801,7 +805,7 @@ fn connect(
             .map_err(ConnectError::m("tcp bind interface error"))?;
     }
 
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     bind_local_address(
         &socket,
         addr,
@@ -810,7 +814,7 @@ fn connect(
     )
     .map_err(ConnectError::m("tcp bind local error"))?;
 
-    #[cfg(unix)]
+    #[cfg(all(not(any(target_env = "sgx", target_env = "fortanixvme")), unix))]
     let socket = unsafe {
         // Safety: `from_raw_fd` is only safe to call if ownership of the raw
         // file descriptor is transferred. Since we call `into_raw_fd` on the
@@ -819,7 +823,7 @@ fn connect(
         use std::os::unix::io::{FromRawFd, IntoRawFd};
         TcpSocket::from_raw_fd(socket.into_raw_fd())
     };
-    #[cfg(windows)]
+    #[cfg(all(not(any(target_env = "sgx", target_env = "fortanixvme")), windows))]
     let socket = unsafe {
         // Safety: `from_raw_socket` is only safe to call if ownership of the raw
         // Windows SOCKET is transferred. Since we call `into_raw_socket` on the
@@ -828,7 +832,7 @@ fn connect(
         use std::os::windows::io::{FromRawSocket, IntoRawSocket};
         TcpSocket::from_raw_socket(socket.into_raw_socket())
     };
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     {
         if config.reuse_address {
             if let Err(e) = socket.set_reuseaddr(true) {
@@ -918,7 +922,7 @@ mod tests {
 
     use ::http::Uri;
 
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     use crate::client::legacy::connect::http::TcpKeepaliveConfig;
 
     use super::super::sealed::{Connect, ConnectSvc};
@@ -1202,7 +1206,7 @@ mod tests {
                         local_address_ipv4: None,
                         local_address_ipv6: None,
                         connect_timeout: None,
-                        #[cfg(not(target_env = "sgx"))]
+                        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
                         tcp_keepalive_config: TcpKeepaliveConfig::default(),
                         happy_eyeballs_timeout: Some(fallback_timeout),
                         nodelay: false,
@@ -1281,13 +1285,13 @@ mod tests {
 
     use std::time::Duration;
 
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     #[test]
     fn no_tcp_keepalive_config() {
         assert!(TcpKeepaliveConfig::default().into_tcpkeepalive().is_none());
     }
 
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     #[test]
     fn tcp_keepalive_time_config() {
         let mut kac = TcpKeepaliveConfig::default();
@@ -1303,7 +1307,8 @@ mod tests {
         target_os = "openbsd",
         target_os = "redox",
         target_os = "solaris",
-        target_env = "sgx"
+        target_env = "sgx",
+        target_env = "fortanixvme"
     )))]
     #[test]
     fn tcp_keepalive_interval_config() {
@@ -1321,7 +1326,8 @@ mod tests {
         target_os = "redox",
         target_os = "solaris",
         target_os = "windows",
-        target_env = "sgx"
+        target_env = "sgx",
+        target_env = "fortanixvme"
     )))]
     #[test]
     fn tcp_keepalive_retries_config() {

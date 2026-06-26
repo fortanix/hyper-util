@@ -42,10 +42,10 @@ pretty_env_logger = "0.5"
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
 pnet_datalink = "0.35.0"
 
-[target.'cfg(not(target_env = "sgx"))'.dev-dependencies]
+[target.'cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))'.dev-dependencies]
 tokio = { version = "1", features = ["macros", "test-util", "signal"] }
 
-[target.'cfg(not(target_env = "sgx"))'.dependencies]
+[target.'cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))'.dependencies]
 socket2 = { version = "0.5", optional = true, features = ["all"] }
 
 [features]
