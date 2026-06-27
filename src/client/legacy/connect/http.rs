@@ -370,8 +370,8 @@ where
     type Future = HttpConnecting<R>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // No DNS resolve on app side in SGX and FortanixVME
         #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
-        // no DNS resolve on app side in SGX
         futures_util::ready!(self.resolver.poll_ready(cx)).map_err(ConnectError::dns)?;
         Poll::Ready(Ok(()))
     }
@@ -439,7 +439,8 @@ where
 
         let sock;
 
-        // in SGX, DNS is handled by enclave runner on user space instead on app side
+        // In SGX and FortanixVME, DNS is handled by enclave runner on user space
+        // instead of app side
 
         #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
         {

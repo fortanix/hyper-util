@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 
 #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
 fn main() {
-    println!("this example is not available in sgx and fortanixvme")
+    println!("This example is not available in SGX and FortanixVME")
 }
 
 #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
