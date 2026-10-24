@@ -6,18 +6,26 @@ use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{self, ready, Poll};
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+use std::task::ready;
+use std::task::{self, Poll};
 use std::time::Duration;
 
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use futures_util::future::Either;
 use http::uri::{Scheme, Uri};
 use pin_project_lite::pin_project;
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use socket2::TcpKeepalive;
-use tokio::net::{TcpSocket, TcpStream};
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+use tokio::net::TcpSocket;
+use tokio::net::TcpStream;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
 
-use super::dns::{self, resolve, GaiResolver, Resolve};
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+use super::dns::resolve;
+use super::dns::{self, GaiResolver, Resolve};
 use super::{Connected, Connection};
 use crate::rt::TokioIo;
 
@@ -69,6 +77,7 @@ struct Config {
     connect_timeout: Option<Duration>,
     enforce_http: bool,
     happy_eyeballs_timeout: Option<Duration>,
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     tcp_keepalive_config: TcpKeepaliveConfig,
     local_address_ipv4: Option<Ipv4Addr>,
     local_address_ipv6: Option<Ipv6Addr>,
@@ -92,6 +101,7 @@ struct Config {
     tcp_user_timeout: Option<Duration>,
 }
 
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 #[derive(Default, Debug, Clone, Copy)]
 struct TcpKeepaliveConfig {
     time: Option<Duration>,
@@ -99,6 +109,7 @@ struct TcpKeepaliveConfig {
     retries: Option<u32>,
 }
 
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 impl TcpKeepaliveConfig {
     /// Converts into a `socket2::TcpKeealive` if there is any keep alive configuration.
     fn into_tcpkeepalive(self) -> Option<TcpKeepalive> {
@@ -229,6 +240,7 @@ impl<R> HttpConnector<R> {
                 connect_timeout: None,
                 enforce_http: true,
                 happy_eyeballs_timeout: Some(Duration::from_millis(300)),
+                #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
                 tcp_keepalive_config: TcpKeepaliveConfig::default(),
                 local_address_ipv4: None,
                 local_address_ipv6: None,
@@ -272,20 +284,41 @@ impl<R> HttpConnector<R> {
     /// Default is `None`.
     #[inline]
     pub fn set_keepalive(&mut self, time: Option<Duration>) {
-        self.config_mut().tcp_keepalive_config.time = time;
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+        {
+            self.config_mut().tcp_keepalive_config.time = time;
+        }
+        #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
+        {
+            let _ = time;
+        }
     }
 
     /// Set the duration between two successive TCP keepalive retransmissions,
     /// if acknowledgement to the previous keepalive transmission is not received.
     #[inline]
     pub fn set_keepalive_interval(&mut self, interval: Option<Duration>) {
-        self.config_mut().tcp_keepalive_config.interval = interval;
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+        {
+            self.config_mut().tcp_keepalive_config.interval = interval;
+        }
+        #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
+        {
+            let _ = interval;
+        }
     }
 
     /// Set the number of retransmissions to be carried out before declaring that remote end is not available.
     #[inline]
     pub fn set_keepalive_retries(&mut self, retries: Option<u32>) {
-        self.config_mut().tcp_keepalive_config.retries = retries;
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+        {
+            self.config_mut().tcp_keepalive_config.retries = retries;
+        }
+        #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
+        {
+            let _ = retries;
+        }
     }
 
     /// Set that all sockets have `SO_NODELAY` set to the supplied value `nodelay`.
@@ -464,7 +497,11 @@ where
     type Future = HttpConnecting<R>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // DNS runs in the enclave runner on SGX and FortanixVME, not in the app.
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
         ready!(self.resolver.poll_ready(cx)).map_err(ConnectError::dns)?;
+        #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
+        let _ = cx;
         Poll::Ready(Ok(()))
     }
 
@@ -532,30 +569,60 @@ where
     async fn call_async(&mut self, dst: Uri) -> Result<TokioIo<TcpStream>, ConnectError> {
         let config = &self.config;
 
-        let (host, port) = get_host_port(config, &dst)?;
-        let host = host.trim_start_matches('[').trim_end_matches(']');
+        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
+        let sock = {
+            let (host, port) = get_host_port(config, &dst)?;
+            let host = host.trim_start_matches('[').trim_end_matches(']');
 
-        // If the host is already an IP addr (v4 or v6),
-        // skip resolving the dns and start connecting right away.
-        let addrs = if let Some(addrs) = dns::SocketAddrs::try_parse(host, port) {
-            addrs
-        } else {
-            let addrs = resolve(&mut self.resolver, dns::Name::new(host.into()))
-                .await
-                .map_err(ConnectError::dns)?;
-            let addrs = addrs
-                .map(|mut addr| {
-                    set_port(&mut addr, port, dst.port().is_some());
+            // If the host is already an IP addr (v4 or v6),
+            // skip resolving the dns and start connecting right away.
+            let addrs = if let Some(addrs) = dns::SocketAddrs::try_parse(host, port) {
+                addrs
+            } else {
+                let addrs = resolve(&mut self.resolver, dns::Name::new(host.into()))
+                    .await
+                    .map_err(ConnectError::dns)?;
+                let addrs = addrs
+                    .map(|mut addr| {
+                        set_port(&mut addr, port, dst.port().is_some());
 
-                    addr
-                })
-                .collect();
-            dns::SocketAddrs::new(addrs)
+                        addr
+                    })
+                    .collect();
+                dns::SocketAddrs::new(addrs)
+            };
+
+            ConnectingTcp::new(addrs, config).connect().await?
         };
 
-        let c = ConnectingTcp::new(addrs, config);
-
-        let sock = c.connect().await?;
+        // The enclave runner resolves DNS. Connect with the host name as given.
+        #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
+        let sock = {
+            let host = get_host(&dst)?;
+            let port = dst
+                .port_u16()
+                .unwrap_or(if dst.scheme() == Some(&Scheme::HTTPS) {
+                    443
+                } else {
+                    80
+                });
+            let connect = TcpStream::connect((host, port));
+            match config.connect_timeout {
+                Some(duration) => match tokio::time::timeout(duration, connect).await {
+                    Ok(Ok(stream)) => stream,
+                    Ok(Err(e)) => return Err(ConnectError::new("tcp connect error", e)),
+                    Err(e) => {
+                        return Err(ConnectError::new(
+                            "tcp connect error",
+                            io::Error::new(io::ErrorKind::TimedOut, e),
+                        ))
+                    }
+                },
+                None => connect
+                    .await
+                    .map_err(|e| ConnectError::new("tcp connect error", e))?,
+            }
+        };
 
         if let Err(e) = sock.set_nodelay(config.nodelay) {
             warn!("tcp set_nodelay error: {}", e);
@@ -563,6 +630,16 @@ where
 
         Ok(TokioIo::new(sock))
     }
+}
+
+#[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
+fn get_host(uri: &Uri) -> Result<&str, ConnectError> {
+    let host = uri.host().ok_or(ConnectError {
+        msg: INVALID_MISSING_HOST,
+        addr: None,
+        cause: None,
+    })?;
+    Ok(host.trim_start_matches('[').trim_end_matches(']'))
 }
 
 impl Connection for TcpStream {
@@ -579,7 +656,7 @@ impl Connection for TcpStream {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_env = "fortanixvme")))]
 impl Connection for tokio::net::UnixStream {
     fn connected(&self) -> Connected {
         Connected::new()
@@ -702,12 +779,14 @@ impl StdError for ConnectError {
     }
 }
 
+#[cfg_attr(any(target_env = "sgx", target_env = "fortanixvme"), allow(dead_code))]
 struct ConnectingTcp<'a> {
     preferred: ConnectingTcpRemote,
     fallback: Option<ConnectingTcpFallback>,
     config: &'a Config,
 }
 
+#[cfg_attr(any(target_env = "sgx", target_env = "fortanixvme"), allow(dead_code))]
 impl<'a> ConnectingTcp<'a> {
     fn new(remote_addrs: dns::SocketAddrs, config: &'a Config) -> Self {
         if let Some(fallback_timeout) = config.happy_eyeballs_timeout {
@@ -739,16 +818,19 @@ impl<'a> ConnectingTcp<'a> {
     }
 }
 
+#[cfg_attr(any(target_env = "sgx", target_env = "fortanixvme"), allow(dead_code))]
 struct ConnectingTcpFallback {
     delay: Sleep,
     remote: ConnectingTcpRemote,
 }
 
+#[cfg_attr(any(target_env = "sgx", target_env = "fortanixvme"), allow(dead_code))]
 struct ConnectingTcpRemote {
     addrs: dns::SocketAddrs,
     connect_timeout: Option<Duration>,
 }
 
+#[cfg_attr(any(target_env = "sgx", target_env = "fortanixvme"), allow(dead_code))]
 impl ConnectingTcpRemote {
     fn new(addrs: dns::SocketAddrs, connect_timeout: Option<Duration>) -> Self {
         let connect_timeout = connect_timeout.and_then(|t| t.checked_div(addrs.len() as u32));
@@ -761,6 +843,7 @@ impl ConnectingTcpRemote {
 }
 
 impl ConnectingTcpRemote {
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     async fn connect(&mut self, config: &Config) -> Result<TcpStream, ConnectError> {
         let mut err = None;
         for addr in &mut self.addrs {
@@ -791,6 +874,7 @@ impl ConnectingTcpRemote {
     }
 }
 
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 fn bind_local_address(
     socket: &socket2::Socket,
     dst_addr: &SocketAddr,
@@ -819,6 +903,7 @@ fn bind_local_address(
     Ok(())
 }
 
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 fn connect(
     addr: &SocketAddr,
     config: &Config,
@@ -949,6 +1034,7 @@ fn connect(
 }
 
 impl ConnectingTcp<'_> {
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     async fn connect(mut self) -> Result<TcpStream, ConnectError> {
         match self.fallback {
             None => self.preferred.connect(self.config).await,
@@ -1003,6 +1089,7 @@ mod tests {
 
     use ::http::Uri;
 
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     use crate::client::legacy::connect::http::TcpKeepaliveConfig;
 
     use super::super::sealed::{Connect, ConnectSvc};
@@ -1284,6 +1371,7 @@ mod tests {
                         local_address_ipv4: None,
                         local_address_ipv6: None,
                         connect_timeout: None,
+                        #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
                         tcp_keepalive_config: TcpKeepaliveConfig::default(),
                         happy_eyeballs_timeout: Some(fallback_timeout),
                         nodelay: false,
@@ -1378,11 +1466,13 @@ mod tests {
 
     use std::time::Duration;
 
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     #[test]
     fn no_tcp_keepalive_config() {
         assert!(TcpKeepaliveConfig::default().into_tcpkeepalive().is_none());
     }
 
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     #[test]
     fn tcp_keepalive_time_config() {
         let kac = TcpKeepaliveConfig {
@@ -1396,7 +1486,13 @@ mod tests {
         }
     }
 
-    #[cfg(not(any(target_os = "openbsd", target_os = "redox", target_os = "solaris")))]
+    #[cfg(not(any(
+        target_os = "openbsd",
+        target_os = "redox",
+        target_os = "solaris",
+        target_env = "sgx",
+        target_env = "fortanixvme"
+    )))]
     #[test]
     fn tcp_keepalive_interval_config() {
         let kac = TcpKeepaliveConfig {
@@ -1414,7 +1510,9 @@ mod tests {
         target_os = "openbsd",
         target_os = "redox",
         target_os = "solaris",
-        target_os = "windows"
+        target_os = "windows",
+        target_env = "sgx",
+        target_env = "fortanixvme"
     )))]
     #[test]
     fn tcp_keepalive_retries_config() {
