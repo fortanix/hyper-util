@@ -30,7 +30,6 @@ ipnet = { version = "2.9", optional = true }
 libc = { version = "0.2", optional = true }
 percent-encoding = { version = "2.3", optional = true }
 pin-project-lite = "0.2.4"
-socket2 = { version = "0.6", optional = true, features = ["all"] }
 tracing = { version = "0.1.36", default-features = false, features = ["std"], optional = true }
 tokio = { version = "1.13", optional = true, default-features = false  }
 tower-layer = { version = "0.3", optional = true }
@@ -41,12 +40,18 @@ hyper = { version = "1.4.0", features = ["full"] }
 bytes = "1"
 futures-util = { version = "0.3.16", default-features = false, features = ["alloc"] }
 http-body-util = "0.1.0"
-tokio = { version = "1", features = ["macros", "test-util", "signal", "net", "io-util"] }
+tokio = { version = "1", features = ["macros", "test-util", "net", "io-util"] }
 tokio-test = "0.4"
 tower-test = "0.4"
 pretty_env_logger = "0.5"
 tracing-core = "0.1.29"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry", "std"] }
+
+[target.'cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))'.dependencies]
+socket2 = { version = "0.6", optional = true, features = ["all"] }
+
+[target.'cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))'.dev-dependencies]
+tokio = { version = "1", features = ["signal"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
 pnet_datalink = "0.35.0"
@@ -113,3 +118,6 @@ required-features = ["server", "http1", "tokio"]
 [[example]]
 name = "server_graceful"
 required-features = ["tokio", "server-graceful", "server-auto"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_env, values("fortanixvme"))'] }

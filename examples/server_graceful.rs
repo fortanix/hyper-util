@@ -1,9 +1,20 @@
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use bytes::Bytes;
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use std::convert::Infallible;
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use std::pin::pin;
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use std::time::Duration;
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 use tokio::net::TcpListener;
 
+#[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
+fn main() {
+    println!("This example is not available in SGX and FortanixVME")
+}
+
+#[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
